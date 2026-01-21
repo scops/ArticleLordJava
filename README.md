@@ -22,6 +22,11 @@ Set the same environment variables as the Python version (case-insensitive):
 
 A `.env` file in the repo root or `java/` directory is also supported.
 
+Optional Playwright MCP overrides:
+
+- `PLAYWRIGHT_MCP_COMMAND` (full command or absolute path to the MCP runner)
+- `PLAYWRIGHT_MCP_ARGS` (extra args to append)
+
 ## Run
 
 From `java/`:

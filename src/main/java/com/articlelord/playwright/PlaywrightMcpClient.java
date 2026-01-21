@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.Map;
 
 public final class PlaywrightMcpClient implements AutoCloseable {
+    private static final String ENV_MCP_COMMAND = "PLAYWRIGHT_MCP_COMMAND";
+    private static final String ENV_MCP_ARGS = "PLAYWRIGHT_MCP_ARGS";
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration INIT_TIMEOUT = Duration.ofSeconds(15);
 
@@ -104,6 +106,20 @@ public final class PlaywrightMcpClient implements AutoCloseable {
 
     private ServerParameters createServerParameters() {
         boolean isWindows = System.getProperty("os.name").toLowerCase().contains("win");
+        String override = getEnv(ENV_MCP_COMMAND);
+        if (override != null && !override.isBlank()) {
+            List<String> tokens = splitCommand(override);
+            String command = tokens.isEmpty() ? override : tokens.get(0);
+            List<String> args = tokens.size() > 1 ? tokens.subList(1, tokens.size()) : List.of();
+            String extraArgs = getEnv(ENV_MCP_ARGS);
+            if (extraArgs != null && !extraArgs.isBlank()) {
+                args = mergeArgs(args, splitCommand(extraArgs));
+            }
+            return ServerParameters.builder(command)
+                    .args(args)
+                    .build();
+        }
+
         if (isWindows) {
             return ServerParameters.builder("cmd.exe")
                     .args("/c", "npx.cmd", "-y", "@playwright/mcp@latest")
@@ -112,5 +128,49 @@ public final class PlaywrightMcpClient implements AutoCloseable {
         return ServerParameters.builder("npx")
                 .args("-y", "@playwright/mcp@latest")
                 .build();
+    }
+
+    private static String getEnv(String key) {
+        String value = System.getenv(key);
+        return value != null ? value.trim() : null;
+    }
+
+    private static List<String> mergeArgs(List<String> base, List<String> extra) {
+        if (extra.isEmpty()) {
+            return base;
+        }
+        List<String> merged = new java.util.ArrayList<>(base.size() + extra.size());
+        merged.addAll(base);
+        merged.addAll(extra);
+        return merged;
+    }
+
+    private static List<String> splitCommand(String raw) {
+        // Minimal whitespace splitter with double-quote support for env-provided commands.
+        List<String> tokens = new java.util.ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean inQuotes = false;
+
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            if (c == '"') {
+                inQuotes = !inQuotes;
+                continue;
+            }
+            if (!inQuotes && Character.isWhitespace(c)) {
+                if (current.length() > 0) {
+                    tokens.add(current.toString());
+                    current.setLength(0);
+                }
+                continue;
+            }
+            current.append(c);
+        }
+
+        if (current.length() > 0) {
+            tokens.add(current.toString());
+        }
+
+        return tokens;
     }
 }
