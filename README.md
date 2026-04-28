@@ -94,7 +94,7 @@ Make sure the jar exists (`mvn -q -DskipTests package`) and your environment var
 
 ## Use with Codex CLI
 
-Create or update your MCP config (for example `~/.config/codex/config.json`) with:
+Create or update your MCP config (for example `~/.codex/config.toml`) with:
 (Change paths accordingly)
 ```json
 mcp_servers.articlelord-java]
