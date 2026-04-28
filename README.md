@@ -97,17 +97,10 @@ Make sure the jar exists (`mvn -q -DskipTests package`) and your environment var
 Create or update your MCP config (for example `~/.config/codex/config.json`) with:
 (Change paths accordingly)
 ```json
-{
-  "mcpServers": {
-    "articlelord-java": {
-      "command": "java",
-      "args": [
-        "-jar",
-        "/home/user/Proyectos/ArticleLord/java/target/articlelord-mcp-java-1.0.0.jar"
-      ]
-    }
-  }
-}
+mcp_servers.articlelord-java]
+  command = "java"
+  args = ["-jar", "/home/user/Proyectos/ArticleLord/java/target/articlelord-mcp-java-1.0.0.jar"]
+  startup_timeout_ms = 20000
 ```
 
 If you prefer a relative path, run Codex from the repo root and use `java/target/articlelord-mcp-java-1.0.0.jar`.
