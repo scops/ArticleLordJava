@@ -11,14 +11,21 @@ import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.TextContent;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Client to interact with Playwright MCP over stdio.
@@ -127,6 +134,7 @@ public final class PlaywrightMcpClient implements AutoCloseable {
         String override = settings.getPlaywrightMcpCommand();
         List<String> args;
         String command;
+        Map<String, String> env = new HashMap<>();
 
         if (override != null && !override.isBlank()) {
             List<String> tokens = splitCommand(override);
@@ -140,15 +148,78 @@ public final class PlaywrightMcpClient implements AutoCloseable {
             command = "cmd.exe";
             args = new ArrayList<>(List.of("/c", "npx.cmd", "-y", "@playwright/mcp@latest"));
         } else {
-            command = "npx";
+            Path npx = findNativeNpx();
+            command = npx.toString();
             args = new ArrayList<>(List.of("-y", "@playwright/mcp@latest"));
+            // npx is a "#!/usr/bin/env node" script: node must be on the child's PATH
+            String path = System.getenv("PATH");
+            env.put("PATH", npx.getParent() + (path == null || path.isBlank() ? "" : File.pathSeparator + path));
         }
 
         if (settings.isPlaywrightHeadless() && !args.contains("--headless")) {
             args.add("--headless");
         }
 
-        return ServerParameters.builder(command).args(args).build();
+        return ServerParameters.builder(command).args(args).env(env).build();
+    }
+
+    /**
+     * Finds a Linux npx, skipping the Windows one that WSL exposes under /mnt/.
+     *
+     * <p>MCP hosts on Windows launch the server with {@code wsl bash -lc ...}: a
+     * non-interactive shell that does not source ~/.bashrc, so nvm is not loaded and
+     * the first npx on PATH is the Windows one. That npx starts cmd.exe with a UNC
+     * working directory and never answers, blocking the server startup.
+     */
+    private static Path findNativeNpx() {
+        String path = System.getenv("PATH");
+        if (path != null) {
+            for (String dir : path.split(File.pathSeparator)) {
+                if (dir.isBlank() || dir.startsWith("/mnt/")) {
+                    continue;
+                }
+                Path candidate = Path.of(dir, "npx");
+                if (Files.isExecutable(candidate)) {
+                    return candidate;
+                }
+            }
+        }
+
+        Path nvmVersions = Path.of(System.getProperty("user.home"), ".nvm", "versions", "node");
+        if (Files.isDirectory(nvmVersions)) {
+            try (Stream<Path> versions = Files.list(nvmVersions)) {
+                Optional<Path> latest = versions
+                        .map(version -> version.resolve("bin").resolve("npx"))
+                        .filter(Files::isExecutable)
+                        .max(Comparator.comparing(PlaywrightMcpClient::nodeVersion));
+                if (latest.isPresent()) {
+                    return latest.get();
+                }
+            } catch (IOException ex) {
+                // Fall through to the error below
+            }
+        }
+
+        throw new IllegalStateException("No Linux npx found on PATH or in ~/.nvm. Install Node.js "
+                + "or set PLAYWRIGHT_MCP_COMMAND to the full path of the Playwright MCP runner.");
+    }
+
+    // ~/.nvm/versions/node/v24.19.0/bin/npx -> [24, 19, 0] packed for ordering
+    private static long nodeVersion(Path npx) {
+        String[] parts = npx.getParent().getParent().getFileName().toString().replaceFirst("^v", "").split("\\.");
+        long packed = 0;
+        for (int i = 0; i < 3; i++) {
+            long part = 0;
+            if (i < parts.length) {
+                try {
+                    part = Long.parseLong(parts[i]);
+                } catch (NumberFormatException ex) {
+                    part = 0;
+                }
+            }
+            packed = packed * 100_000 + part;
+        }
+        return packed;
     }
 
     private static List<String> splitCommand(String raw) {
