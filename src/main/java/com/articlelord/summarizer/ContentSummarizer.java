@@ -1,118 +1,100 @@
 package com.articlelord.summarizer;
 
 import com.articlelord.config.Settings;
-import io.modelcontextprotocol.json.McpJsonMapper;
-import io.modelcontextprotocol.json.TypeRef;
+import com.anthropic.client.AnthropicClient;
+import com.anthropic.client.okhttp.AnthropicOkHttpClient;
+import com.anthropic.core.JsonValue;
+import com.anthropic.models.beta.messages.BetaMessage;
+import com.anthropic.models.beta.messages.BetaOutputConfig;
+import com.anthropic.models.beta.messages.BetaStopReason;
+import com.anthropic.models.beta.messages.MessageCreateParams;
 
-import java.io.IOException;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.stream.Collectors;
 
 public final class ContentSummarizer {
-    private static final URI API_URI = URI.create("https://api.anthropic.com/v1/messages");
-    private static final String API_VERSION = "2023-06-01";
+    // Server-side refusal fallback ("default" routes by refusal category, no model list to maintain)
+    private static final String FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
     private final Settings settings;
-    private final HttpClient httpClient;
-    private final McpJsonMapper jsonMapper;
+    private final AnthropicClient client;
 
     public ContentSummarizer(Settings settings) {
         this.settings = settings;
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(20))
+        this.client = AnthropicOkHttpClient.builder()
+                .apiKey(settings.getAnthropicApiKey())
                 .build();
-        this.jsonMapper = McpJsonMapper.getDefault();
     }
 
+    /**
+     * Summarizes web content in Spanish.
+     *
+     * @param maxTokens token budget for the response (includes the model's reasoning)
+     * @throws SummarizationError when the model answers without a usable summary
+     */
     public String summarize(String content, String title, int maxTokens) {
-        String prompt = buildPrompt(content, title);
-        String payload = buildPayload(prompt, maxTokens);
+        MessageCreateParams.Builder params = MessageCreateParams.builder()
+                .model(settings.getLlmModel())
+                .maxTokens(maxTokens)
+                .addUserMessage(buildPrompt(content, title));
 
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(API_URI)
-                .timeout(Duration.ofSeconds(60))
-                .header("Content-Type", "application/json")
-                .header("x-api-key", settings.getAnthropicApiKey())
-                .header("anthropic-version", API_VERSION)
-                .POST(HttpRequest.BodyPublishers.ofString(payload))
-                .build();
-
-        try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new IllegalStateException("Anthropic API error: " + response.statusCode() + " " + response.body());
-            }
-
-            Map<String, Object> responseJson = jsonMapper.readValue(response.body(), new TypeRef<>() {});
-            if (responseJson.containsKey("error")) {
-                throw new IllegalStateException("Anthropic API error: " + responseJson.get("error"));
-            }
-
-            return extractText(responseJson);
-        } catch (IOException ex) {
-            throw new IllegalStateException("Failed to summarize content: " + ex.getMessage(), ex);
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("Summarization interrupted", ex);
+        // Effort controls reasoning depth (not supported on Haiku 4.5: leave LLM_EFFORT empty)
+        if (!settings.getLlmEffort().isEmpty()) {
+            params.outputConfig(BetaOutputConfig.builder()
+                    .effort(BetaOutputConfig.Effort.of(settings.getLlmEffort()))
+                    .build());
         }
-    }
 
-    private String buildPayload(String prompt, int maxTokens) {
-        Map<String, Object> message = new HashMap<>();
-        message.put("role", "user");
-        message.put("content", List.of(Map.of("type", "text", "text", prompt)));
-
-        Map<String, Object> payload = new HashMap<>();
-        payload.put("model", settings.getLlmModel());
-        payload.put("max_tokens", maxTokens);
-        payload.put("messages", List.of(message));
-
-        try {
-            return jsonMapper.writeValueAsString(payload);
-        } catch (IOException ex) {
-            throw new IllegalStateException("Failed to serialize Anthropic request payload", ex);
+        if (settings.isLlmFallbacks()) {
+            params.addBeta(FALLBACK_BETA)
+                    .putAdditionalBodyProperty("fallbacks", JsonValue.from("default"));
         }
-    }
 
-    private String extractText(Map<String, Object> responseJson) {
-        Object content = responseJson.get("content");
-        if (content instanceof List<?> contentList && !contentList.isEmpty()) {
-            Object first = contentList.get(0);
-            if (first instanceof Map<?, ?> firstMap) {
-                Object text = firstMap.get("text");
-                if (text instanceof String textValue) {
-                    return textValue;
-                }
-            }
+        BetaMessage message = client.beta().messages().create(params.build());
+        BetaStopReason stopReason = message.stopReason().orElse(null);
+
+        if (BetaStopReason.REFUSAL.equals(stopReason)) {
+            throw new SummarizationError("The model declined to summarize this content.");
         }
-        throw new IllegalStateException("Unexpected Anthropic response format: " + responseJson);
+
+        // With adaptive thinking the first block may be a (hidden) thinking block
+        String summary = message.content().stream()
+                .flatMap(block -> block.text().stream())
+                .map(text -> text.text())
+                .collect(Collectors.joining());
+
+        if (BetaStopReason.MAX_TOKENS.equals(stopReason) && summary.isEmpty()) {
+            throw new SummarizationError("The token budget ran out before the summary was written.");
+        }
+
+        return summary;
     }
 
     private String buildPrompt(String content, String title) {
         StringBuilder builder = new StringBuilder();
         if (title != null && !title.isBlank()) {
-            builder.append("Titulo: ").append(title).append("\n\n");
+            builder.append("Título: ").append(title).append("\n\n");
         }
 
-        builder.append("Eres un experto en resumir articulos y contenido web.\n\n")
-                .append("Por favor, proporciona un resumen claro, conciso e informativo del siguiente contenido EN ESPANOL.\n\n")
-                .append("Enfocate en:\n")
+        builder.append("Eres un experto en resumir artículos y contenido web.\n\n")
+                .append("Por favor, proporciona un resumen claro, conciso e informativo del siguiente contenido EN ESPAÑOL.\n\n")
+                .append("Enfócate en:\n")
                 .append("- Los puntos principales\n")
                 .append("- Las conclusiones clave\n")
-                .append("- La informacion importante\n\n")
-                .append("Estructura el resumen con secciones claras si el contenido cubre multiples temas.\n\n")
+                .append("- La información importante\n\n")
+                .append("Estructura el resumen con secciones claras si el contenido cubre múltiples temas.\n\n")
                 .append("Contenido:\n")
                 .append(content)
                 .append("\n\n")
-                .append("IMPORTANTE: Tu respuesta debe estar completamente en espanol.\n\n")
+                .append("IMPORTANTE: Tu respuesta debe estar completamente en español.\n\n")
                 .append("Resumen:");
 
         return builder.toString();
+    }
+
+    /** The model answered but did not produce a usable summary. */
+    public static final class SummarizationError extends RuntimeException {
+        public SummarizationError(String message) {
+            super(message);
+        }
     }
 }

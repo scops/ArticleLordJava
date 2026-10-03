@@ -5,41 +5,55 @@
 
   <groupId>com.articlelord</groupId>
   <artifactId>articlelord-mcp-java</artifactId>
-  <version>1.0.0</version>
+  <version>2.0.0</version>
 
   <properties>
-    <maven.compiler.source>17</maven.compiler.source>
-    <maven.compiler.target>17</maven.compiler.target>
+    <maven.compiler.release>21</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <mcp.version>0.17.1</mcp.version>
-    <jakarta.mail.version>2.0.1</jakarta.mail.version>
+    <mcp.version>2.0.1</mcp.version>
+    <anthropic.version>2.68.0</anthropic.version>
+    <angus.mail.version>2.0.5</angus.mail.version>
+    <slf4j.version>2.0.20</slf4j.version>
   </properties>
 
   <dependencies>
+    <!-- MCP Java SDK v2 (spec 2025-11-25, Jackson 3 by default) -->
     <dependency>
       <groupId>io.modelcontextprotocol.sdk</groupId>
       <artifactId>mcp</artifactId>
       <version>${mcp.version}</version>
     </dependency>
     <dependency>
-      <groupId>com.sun.mail</groupId>
-      <artifactId>jakarta.mail</artifactId>
-      <version>${jakarta.mail.version}</version>
+      <groupId>com.anthropic</groupId>
+      <artifactId>anthropic-java</artifactId>
+      <version>${anthropic.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.angus</groupId>
+      <artifactId>angus-mail</artifactId>
+      <version>${angus.mail.version}</version>
     </dependency>
     <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-simple</artifactId>
-      <version>2.0.13</version>
+      <version>${slf4j.version}</version>
       <scope>runtime</scope>
     </dependency>
   </dependencies>
 
   <build>
+    <!-- Version-free jar name so MCP client configs survive version bumps -->
+    <finalName>articlelord-mcp-java</finalName>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.15.0</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>
-        <version>3.6.0</version>
+        <version>3.6.2</version>
         <executions>
           <execution>
             <phase>package</phase>
@@ -47,27 +61,32 @@
               <goal>shade</goal>
             </goals>
             <configuration>
-              <createDependencyReducedPom>true</createDependencyReducedPom>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                    <exclude>module-info.class</exclude>
+                    <exclude>META-INF/versions/*/module-info.class</exclude>
+                  </excludes>
+                </filter>
+              </filters>
               <transformers>
+                <!-- The MCP SDK finds its JSON mapper through ServiceLoader -->
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                   <mainClass>com.articlelord.server.ArticleLordServer</mainClass>
+                  <manifestEntries>
+                    <Multi-Release>true</Multi-Release>
+                  </manifestEntries>
                 </transformer>
               </transformers>
             </configuration>
           </execution>
         </executions>
-      </plugin>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-jar-plugin</artifactId>
-        <version>3.4.2</version>
-        <configuration>
-          <archive>
-            <manifest>
-              <mainClass>com.articlelord.server.ArticleLordServer</mainClass>
-            </manifest>
-          </archive>
-        </configuration>
       </plugin>
     </plugins>
   </build>

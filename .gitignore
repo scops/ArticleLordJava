@@ -65,3 +65,6 @@ dependency-reduced-pom.xml
 .classpath
 .project
 .settings/
+
+# Playwright MCP output
+.playwright-mcp/
